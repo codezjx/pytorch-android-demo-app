@@ -23,7 +23,10 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.util.Arrays;
 
 import org.pytorch.LiteModuleLoader;
 
@@ -54,25 +57,32 @@ public class MainActivity extends AppCompatActivity implements Runnable {
         mTextView = findViewById(R.id.tvResult);
 
         if (mModuleEncoder == null) {
-            mModuleEncoder = LiteModuleLoader.load(assetFilePath(getApplicationContext(), "streaming_asrv2.ptl"));
+            mModuleEncoder = LiteModuleLoader.load(assetFilePath(getApplicationContext(), "unity_on_device_s2t.ptl"));
         }
 
         mButton.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                if (mButton.getText().equals("Start")) {
-                    mButton.setText("Listening... Stop");
-                    mListening = true;
-                }
-                else {
-                    mButton.setText("Start");
-                    mListening = false;
+//                if (mButton.getText().equals("Start")) {
+//                    mButton.setText("Listening... Stop");
+//                    mListening = true;
+//                }
+//                else {
+//                    mButton.setText("Start");
+//                    mListening = false;
+//                }
+
+                try {
+                    double[] inputBuffer = readWavFileFromAssert("asknot.wav");
+                    showTranslationResult(recognize(inputBuffer));
+                } catch (IOException e) {
+                    Log.e(TAG, "Error reading WAV file", e);
                 }
 
-                Thread thread = new Thread(MainActivity.this);
-                thread.start();
+//                Thread thread = new Thread(MainActivity.this);
+//                thread.start();
             }
         });
-        requestMicrophonePermission();
+//        requestMicrophonePermission();
     }
 
     private void requestMicrophonePermission() {
@@ -162,25 +172,49 @@ public class MainActivity extends AppCompatActivity implements Runnable {
         record.stop();
         record.release();
     }
+    
+    private double[] readWavFileFromAssert(String assetName) throws IOException {
+        InputStream is = getAssets().open(assetName);
+        byte[] byteData = new byte[is.available()];
+        is.read(byteData);
+        is.close();
+        
+        int sampleSize = 2; // 16bit single channel
+        int numSamples = byteData.length / sampleSize;
+        double[] audioData = new double[numSamples];
+
+        ByteBuffer byteBuffer = ByteBuffer.wrap(byteData);
+        byteBuffer.order(ByteOrder.LITTLE_ENDIAN);
+
+        for (int i = 0; i < numSamples; i++) {
+            audioData[i] = byteBuffer.getShort() / 32768.0; // convert to double
+        }
+
+        return audioData;
+    }
 
     private String recognize(double[] inputBuffer) {
-        FloatBuffer inTensorBuffer = Tensor.allocateFloatBuffer(INPUT_SIZE);
+        int inputSize = inputBuffer.length;
+        FloatBuffer inTensorBuffer = Tensor.allocateFloatBuffer(inputSize);
         for (int i = 0; i < inputBuffer.length - 1; i++) {
             inTensorBuffer.put((float) inputBuffer[i]);
         }
 
-        final Tensor inTensor = Tensor.fromBlob(inTensorBuffer, new long[]{INPUT_SIZE});
+        final Tensor inTensor = Tensor.fromBlob(inTensorBuffer, new long[]{1, inputSize});
+        Log.d(TAG, "Input tensor shape: " + Arrays.toString(inTensor.shape()));
+        // set tgtLang to "eng" for English
+        IValue tgtLangIValue = IValue.from("eng");
         final long startTime = SystemClock.elapsedRealtime();
-        IValue[] outputTuple;
-        if (hypo == null && state == null)
-            outputTuple = mModuleEncoder.forward(IValue.from(inTensor)).toTuple();
-        else
-            outputTuple = mModuleEncoder.forward(IValue.from(inTensor), hypo, state).toTuple();
+        IValue output = mModuleEncoder.forward(IValue.from(inTensor), tgtLangIValue);
         final long inferenceTime = SystemClock.elapsedRealtime() - startTime;
         Log.d(TAG, "inference time (ms): " + inferenceTime);
-        final String transcript = outputTuple[0].toStr().replace("▁", "");;
-        hypo = outputTuple[1];
-        state = outputTuple[2];
+        String transcript;
+        if (output.isString()) {
+            transcript = output.toStr();
+        } else {
+            Log.e(TAG, "Unexpected output type: " + output);
+            return "";
+        }
         if (transcript.length() > 0)
             Log.d(TAG, "transcript=" + transcript);
         return transcript;
